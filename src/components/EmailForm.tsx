@@ -6,23 +6,73 @@ import Input from "./ui/emailform/Input";
 import Label from "./ui/emailform/Label";
 import TextArea from "./ui/emailform/TextArea";
 
+type Payload = { name: string; email: string; description: string };
+type Status = "idle" | "sending" | "success" | "error";
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// Posts to the Google Apps Script webhook (Sheet row + thank-you email).
+// Never throws: the Firestore save must not depend on it.
+async function sendToSheet(payload: Payload): Promise<void> {
+  const url = import.meta.env.VITE_SHEETS_WEBHOOK_URL as string | undefined;
+  if (!url) return;
+  try {
+    await fetch(url, {
+      method: "POST",
+      mode: "no-cors",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    console.error("Sheet webhook failed: ", err);
+  }
+}
+
 export function EmailForm() {
   const [fullName, setFullName] = React.useState<string>("");
   const [email, setEmail] = React.useState<string>("");
   const [description, setDescription] = React.useState<string>("");
+  const [status, setStatus] = React.useState<Status>("idle");
+  const [message, setMessage] = React.useState<string>("");
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    try {
-      const docRef = await addDoc(collection(db, "MyRequestData"), {
-        name: fullName,
-        email: email,
-        description: description,
-      });
-      console.log("Document written with ID: ", docRef.id);
-    } catch (e) {
-      console.error("Error adding document: ", e);
+    if (status === "sending") return;
+
+    const payload: Payload = {
+      name: fullName.trim(),
+      email: email.trim(),
+      description: description.trim(),
+    };
+
+    if (!payload.name || !payload.email || !payload.description) {
+      setStatus("error");
+      setMessage("Please fill in all fields.");
+      return;
     }
+    if (!EMAIL_RE.test(payload.email)) {
+      setStatus("error");
+      setMessage("Please enter a valid email address.");
+      return;
+    }
+
+    setStatus("sending");
+    setMessage("");
+    try {
+      await addDoc(collection(db, "MyRequestData"), payload);
+    } catch (err) {
+      console.error("Error adding document: ", err);
+      setStatus("error");
+      setMessage("Something went wrong. Please try again.");
+      return;
+    }
+
+    await sendToSheet(payload);
+    setStatus("success");
+    setMessage("Thanks! Your message was sent. Check your inbox for a confirmation.");
+    setFullName("");
+    setEmail("");
+    setDescription("");
   };
   
   return (
@@ -63,7 +113,7 @@ export function EmailForm() {
             Give a small decription about your project
           </Label>
           <TextArea
-            id="decription"
+            id="description"
             value={description}
             onChange={(e) => setDescription(e.target.value)}
           />
@@ -72,10 +122,23 @@ export function EmailForm() {
         <button
           className="bg-gradient-to-br relative group/btn from-black dark:from-zinc-900 dark:to-zinc-900 to-neutral-600 block dark:bg-zinc-800 w-full text-white rounded-md h-10 font-medium shadow-[0px_1px_0px_0px_#ffffff40_inset,0px_-1px_0px_0px_#ffffff40_inset] dark:shadow-[0px_1px_0px_0px_var(--zinc-800)_inset,0px_-1px_0px_0px_var(--zinc-800)_inset]"
           type="submit"
+          disabled={status === "sending"}
         >
-          Submit &rarr;
+          {status === "sending" ? "Sending..." : <>Submit &rarr;</>}
           <BottomGradient />
         </button>
+
+        {message && (
+          <p
+            role="status"
+            className={cn(
+              "text-sm text-center",
+              status === "success" ? "text-green-400" : "text-red-400"
+            )}
+          >
+            {message}
+          </p>
+        )}
 
         <div className="bg-gradient-to-r from-transparent via-neutral-300 dark:via-neutral-700 to-transparent my-8 h-[1px] w-full" />
       </form>
